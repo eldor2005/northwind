@@ -7,17 +7,15 @@ import { users } from "../db/schema";
 import { eq } from "drizzle-orm"; 
 
 export async function clerkWebhookHandler(req: Request, res: Response) {
-    const env =getEnv()
+    const env = getEnv();
 
     try {
-        // webhook verification needs a shared secret; without it we cannot trust incoming POSTs.
         if (!env.CLERK_WEBHOOK_SECRET) {
-            res.status(503).send("Webhooks secret is not provided")
+            res.status(503).send("Webhooks secret is not provided");
             return;
         }
 
-        // Clerk's verifier expects a Web Request with the raw body; Express may give Buffer or string.
-        const payload = req.body instanceof Buffer ? req.body.toString("utf8") : String(req.body);
+        const payload = req.body instanceof Buffer ? req.body.toString("utf8") : JSON.stringify(req.body);
 
         const request = new Request("http://internal/webhooks/clerk", {
             method: "POST",
@@ -25,10 +23,9 @@ export async function clerkWebhookHandler(req: Request, res: Response) {
             body: payload,
         });
 
-        // throws if signature is wrong or body was tampered with; only then we trust evt.
         const evt = await verifyWebhook(request, { signingSecret: env.CLERK_WEBHOOK_SECRET });
 
-        if(evt.type === "user.created" || evt.type === "user.update") {
+        if(evt.type === "user.created" || evt.type === "user.updated") {
             const u = evt.data;
 
             const email =
@@ -48,12 +45,12 @@ export async function clerkWebhookHandler(req: Request, res: Response) {
                 displayName,
                 role,
             })
-
             .onConflictDoUpdate({
                 target: users.clerkUserId,
-                set: { email, displayName, role, updatedAt: new Data() },
+                set: { email, displayName, role, updatedAt: new Date() },
             });
         } 
+        
         if(evt.type === "user.deleted") {
             const id = evt.data.id;
             if (id) {
@@ -63,8 +60,7 @@ export async function clerkWebhookHandler(req: Request, res: Response) {
 
         res.json({ ok: true });
      } catch (error) {
-        // Bad signature, malformed payload, or DB error - do not leak details to the client.
-        console.error("Clerk webhook error", err);
+        console.error("Clerk webhook error", error);
         res.status(400).json({ error: "Invalid webhook" });
     }
 }
